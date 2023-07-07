@@ -697,7 +697,7 @@ contract MultiwrapTest is BaseTest {
         // ===== target test content =====
 
         vm.prank(recipient);
-        vm.expectRevert("wrapped NFT DNE.");
+        vm.expectRevert("ERC721: invalid token ID");
         multiwrap.unwrap(expectedIdForWrappedToken + 1, recipient);
     }
 

@@ -13,7 +13,6 @@ pragma solidity ^0.8.11;
 //    \____/ \__|  \__|\__|\__|       \_______| \_____\____/  \_______|\_______/
 
 //  ==========  External imports    ==========
-import "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 
 import "@openzeppelin/contracts-upgradeable/utils/MulticallUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
@@ -23,6 +22,7 @@ import "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
 
 import "../interfaces/IMultiwrap.sol";
 import "../openzeppelin-presets/metatx/ERC2771ContextUpgradeable.sol";
+import "../eip/ERC721AVirtualApproveUpgradeable.sol";
 
 //  ==========  Features    ==========
 
@@ -42,7 +42,7 @@ contract Multiwrap is
     ReentrancyGuardUpgradeable,
     ERC2771ContextUpgradeable,
     MulticallUpgradeable,
-    ERC721EnumerableUpgradeable,
+    ERC721AUpgradeable,
     IMultiwrap
 {
     /*///////////////////////////////////////////////////////////////
@@ -83,7 +83,7 @@ contract Multiwrap is
         // Initialize inherited contracts, most base-like -> most derived.
         __ReentrancyGuard_init();
         __ERC2771Context_init(_trustedForwarders);
-        __ERC721_init(_name, _symbol);
+        __ERC721A_init(_name, _symbol);
 
         // Initialize this contract's state.
         _setupDefaultRoyaltyInfo(_royaltyRecipient, _royaltyBps);
@@ -142,13 +142,9 @@ contract Multiwrap is
     }
 
     /// @dev See ERC 165
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        virtual
-        override(ERC1155Receiver, ERC721EnumerableUpgradeable, IERC165)
-        returns (bool)
-    {
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view virtual override(ERC1155Receiver, ERC721AUpgradeable, IERC165) returns (bool) {
         return
             super.supportsInterface(interfaceId) ||
             interfaceId == type(IERC721Upgradeable).interfaceId ||
@@ -177,15 +173,15 @@ contract Multiwrap is
 
         _storeTokens(_msgSender(), _tokensToWrap, _uriForWrappedToken, tokenId);
 
-        _safeMint(_recipient, tokenId);
+        _safeMint(_recipient, 1);
 
-        emit TokensWrapped(_msgSender(), _recipient, tokenId, _tokensToWrap);
+        emit TokensWrapped(_msgSender(), _recipient, _currentIndex - 1, _tokensToWrap);
     }
 
     /// @dev Unwrap a wrapped NFT to retrieve underlying ERC1155, ERC721, ERC20 tokens.
     function unwrap(uint256 _tokenId, address _recipient) external nonReentrant onlyRoleWithSwitch(UNWRAP_ROLE) {
-        require(_tokenId < nextTokenIdToMint, "wrapped NFT DNE.");
-        require(_isApprovedOrOwner(_msgSender(), _tokenId), "caller not approved for unwrapping.");
+        // require(_tokenId < nextTokenIdToMint, "wrapped NFT DNE.");
+        //require(_isApprovedOrOwner(_msgSender(), _tokenId), "caller not approved for unwrapping.");
 
         _burn(_tokenId);
         _releaseTokens(_recipient, _tokenId);
@@ -233,12 +229,13 @@ contract Multiwrap is
     /**
      * @dev See {ERC721-_beforeTokenTransfer}.
      */
-    function _beforeTokenTransfer(
+    function _beforeTokenTransfers(
         address from,
         address to,
-        uint256 tokenId
+        uint256 startTokenId,
+        uint256 quantity
     ) internal virtual override {
-        super._beforeTokenTransfer(from, to, tokenId);
+        super._beforeTokenTransfers(from, to, startTokenId, quantity);
 
         // if transfer is restricted on the contract, we still want to allow burning and minting
         if (!hasRole(TRANSFER_ROLE, address(0)) && from != address(0) && to != address(0)) {
