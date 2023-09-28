@@ -372,6 +372,17 @@ contract TokenERC1155Test is BaseTest {
         tokenContract.mintWithSignature(_mintrequest, _signature);
     }
 
+    function test_revert_mintWithSignature_IncorrectValue() public {
+        vm.warp(1000);
+
+        _mintrequest.quantity = 1;
+        _signature = signMintRequest(_mintrequest, privateKey);
+
+        vm.prank(recipient);
+        vm.expectRevert("!Value");
+        tokenContract.mintWithSignature{ value: 1 }(_mintrequest, _signature);
+    }
+
     function test_event_mintWithSignature() public {
         vm.warp(1000);
 
@@ -400,6 +411,13 @@ contract TokenERC1155Test is BaseTest {
         assertEq(tokenContract.nextTokenIdToMint(), nextTokenId + 1);
         assertEq(tokenContract.uri(nextTokenId), _tokenURI);
         assertEq(tokenContract.balanceOf(recipient, nextTokenId), currentBalanceOfRecipient + _amount);
+
+        vm.prank(deployerSigner);
+        tokenContract.mintTo(recipient, nextTokenId, _tokenURI, _amount);
+
+        assertEq(tokenContract.nextTokenIdToMint(), nextTokenId + 1);
+        assertEq(tokenContract.uri(nextTokenId), _tokenURI);
+        assertEq(tokenContract.balanceOf(recipient, nextTokenId), currentBalanceOfRecipient + _amount + _amount);
     }
 
     function test_revert_mintTo_NotAuthorized() public {
@@ -417,6 +435,17 @@ contract TokenERC1155Test is BaseTest {
         );
         vm.prank(address(0x1));
         tokenContract.mintTo(recipient, type(uint256).max, _tokenURI, _amount);
+    }
+
+    function test_revert_mintTo_InvalidId() public {
+        string memory _tokenURI = "tokenURI";
+        uint256 _amount = 100;
+
+        uint256 nextTokenId = tokenContract.nextTokenIdToMint();
+        vm.startPrank(deployerSigner);
+
+        vm.expectRevert("invalid id");
+        tokenContract.mintTo(recipient, nextTokenId + 1, _tokenURI, _amount);
     }
 
     function test_event_mintTo() public {
@@ -488,6 +517,64 @@ contract TokenERC1155Test is BaseTest {
         vm.prank(address(0x789));
         vm.expectRevert("ERC1155: caller is not owner nor approved.");
         tokenContract.burn(recipient, nextTokenId, _amount);
+    }
+
+    /*///////////////////////////////////////////////////////////////
+                        Unit tests: `burnBatch`
+    //////////////////////////////////////////////////////////////*/
+
+    function test_state_burnBatch_TokenOwner() public {
+        string memory _tokenURI = "tokenURI";
+        uint256 _amount = 100;
+
+        uint256 nextTokenId = tokenContract.nextTokenIdToMint();
+        uint256[] memory initBalances = new uint256[](2);
+        initBalances[0] = tokenContract.balanceOf(recipient, nextTokenId);
+        initBalances[1] = tokenContract.balanceOf(recipient, nextTokenId + 1);
+
+        vm.startPrank(deployerSigner);
+        tokenContract.mintTo(recipient, type(uint256).max, _tokenURI, _amount);
+        tokenContract.mintTo(recipient, type(uint256).max, _tokenURI, _amount);
+        vm.stopPrank();
+
+        uint256[] memory tokenIds = new uint256[](2);
+        tokenIds[0] = nextTokenId;
+        tokenIds[1] = nextTokenId + 1;
+
+        uint256[] memory burnBalances = new uint256[](2);
+        burnBalances[0] = _amount;
+        burnBalances[1] = _amount;
+
+        vm.prank(recipient);
+        tokenContract.burnBatch(recipient, tokenIds, burnBalances);
+
+        assertEq(tokenContract.balanceOf(recipient, nextTokenId), initBalances[0]);
+        assertEq(tokenContract.balanceOf(recipient, nextTokenId + 1), initBalances[1]);
+    }
+
+    function test_state_burnBatch_TokenOperator() public {
+        string memory _tokenURI = "tokenURI";
+        uint256 _amount = 100;
+        address operator = address(0x789);
+
+        uint256 nextTokenId = tokenContract.nextTokenIdToMint();
+
+        vm.startPrank(deployerSigner);
+        tokenContract.mintTo(recipient, type(uint256).max, _tokenURI, _amount);
+        tokenContract.mintTo(recipient, type(uint256).max, _tokenURI, _amount);
+        vm.stopPrank();
+
+        uint256[] memory tokenIds = new uint256[](2);
+        tokenIds[0] = nextTokenId;
+        tokenIds[1] = nextTokenId + 1;
+
+        uint256[] memory burnBalances = new uint256[](2);
+        burnBalances[0] = _amount;
+        burnBalances[1] = _amount;
+
+        vm.prank(operator);
+        vm.expectRevert("ERC1155: caller is not owner nor approved.");
+        tokenContract.burnBatch(recipient, tokenIds, burnBalances);
     }
 
     /*///////////////////////////////////////////////////////////////
@@ -935,5 +1022,81 @@ contract TokenERC1155Test is BaseTest {
 
         vm.expectRevert("NFTMetadata: metadata is frozen.");
         tokenContract.setTokenURI(0, uri);
+    }
+}
+
+contract TokenERC1155InitializerTest is BaseTest {
+    TokenERC1155 public tokenContract;
+    TokenERC1155 public newTokenContract;
+    bytes32 internal typehashMintRequest;
+    bytes32 internal nameHash;
+    bytes32 internal versionHash;
+    bytes32 internal typehashEip712;
+    bytes32 internal domainSeparator;
+
+    bytes private emptyEncodedBytes = abi.encode("", "");
+
+    TokenERC1155.MintRequest _mintrequest;
+    bytes _signature;
+
+    address internal deployerSigner;
+    address internal recipient;
+
+    using stdStorage for StdStorage;
+
+    function setUp() public override {
+        super.setUp();
+        deployerSigner = signer;
+        recipient = address(0x123);
+
+        tokenContract = TokenERC1155(getContract("TokenERC1155"));
+
+        erc20.mint(deployerSigner, 1_000);
+        vm.deal(deployerSigner, 1_000);
+
+        erc20.mint(recipient, 1_000);
+        vm.deal(recipient, 1_000);
+
+        typehashMintRequest = keccak256(
+            "MintRequest(address to,address royaltyRecipient,uint256 royaltyBps,address primarySaleRecipient,uint256 tokenId,string uri,uint256 quantity,uint256 pricePerToken,address currency,uint128 validityStartTimestamp,uint128 validityEndTimestamp,bytes32 uid)"
+        );
+        nameHash = keccak256(bytes("TokenERC1155"));
+        versionHash = keccak256(bytes("1"));
+        typehashEip712 = keccak256(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+        domainSeparator = keccak256(
+            abi.encode(typehashEip712, nameHash, versionHash, block.chainid, address(tokenContract))
+        );
+    }
+
+    function test_initializer() public {
+        deployContractProxy(
+            "TokenERC1155",
+            abi.encodeCall(
+                TokenERC721.initialize,
+                (
+                    signer,
+                    NAME,
+                    SYMBOL,
+                    CONTRACT_URI,
+                    forwarders(),
+                    saleRecipient,
+                    royaltyRecipient,
+                    royaltyBps,
+                    platformFeeBps,
+                    platformFeeRecipient
+                )
+            )
+        );
+
+        newTokenContract = TokenERC1155(getContract("TokenERC1155"));
+
+        assertEq(newTokenContract.name(), NAME);
+        assertEq(newTokenContract.symbol(), SYMBOL);
+        assertEq(newTokenContract.contractURI(), CONTRACT_URI);
+        assertEq(newTokenContract.platformFeeRecipient(), platformFeeRecipient);
+        assertEq(newTokenContract.primarySaleRecipient(), saleRecipient);
+        assertEq(newTokenContract.owner(), signer);
     }
 }
